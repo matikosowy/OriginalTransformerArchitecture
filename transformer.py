@@ -139,11 +139,11 @@ class Decoder(nn.Module):
         self.fc_net = nn.Linear(embed_size, y_vocab_size)
         self.dropout = nn.Dropout(drop_rate)
         
-    def forward(self, encoder_out, x_mask, y_mask):
-        bs, seq_len = encoder_out.shape
+    def forward(self, x, encoder_out, x_mask, y_mask):
+        bs, seq_len = x.shape
         positions = torch.arange(0, seq_len).expand(bs, seq_len).to(self.device)
         
-        x = self.token_embedding(encoder_out) + self.pos_embedding(positions)
+        x = self.token_embedding(x) + self.pos_embedding(positions)
         x = self.dropout(x)
         
         for layer in self.layers:
@@ -154,8 +154,9 @@ class Decoder(nn.Module):
         
 
 class Transformer(nn.Module):
-    def __init__(self, x_vocab_size, y_vocab_size, embed_size=512, n_heads=8, 
-                 n_layers=6, ff_expansion=4, drop_rate=0.1, max_len=100, device='cpu'):
+    def __init__(self, x_vocab_size, y_vocab_size, x_pad_tok, y_pad_tok,
+                 embed_size=512, n_heads=8, n_layers=6, ff_expansion=4, 
+                 drop_rate=0.1, max_len=100, device='cpu'):
         
         super().__init__()
         
@@ -164,18 +165,56 @@ class Transformer(nn.Module):
         
         self.decoder = Decoder(y_vocab_size, embed_size, n_heads, n_layers, 
                                ff_expansion, drop_rate, max_len, device)
+        
+        self.x_pad_tok = x_pad_tok
+        self.y_pad_tok = y_pad_tok
+        self.device = device
+        
+    def x_mask_create(self, x):
+        return (x != self.x_pad_tok).unsqueeze(1).unsqueeze(2).to(self.device)
+    
+    def y_mask_create(self, y):
+        bs, y_len = y.shape
+        return torch.tril(torch.ones(y_len, y_len)).expand(bs, 1, y_len, y_len).to(self.device)
+    
+    def forward(self, x, y):
+        x_mask = self.x_mask_create(x)
+        y_mask = self.y_mask_create(y)
+        
+        encoder_out = self.encoder(x, x_mask)
+        decoder_out = self.decoder(y, encoder_out, x_mask, y_mask)
+        
+        return decoder_out
                
-# test
+# Testing
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # <PAD> is 0
+    # <BOS> is 1
+    # <EOS> is 2
+    
+    x_sentence1 = [1, 5, 6, 4, 3, 9, 5, 2, 0]
+    x_sentence2 = [1, 8, 7, 3, 4, 5, 6, 7, 2]
+    x = torch.tensor([x_sentence1, x_sentence2]).to(device)
 
-encoder = Encoder(100, 512, 8, 6, 4, 0.1, 100, 'cpu')
+    y_sentence1 = [1, 7, 4, 3, 5, 9, 2, 0]
+    y_sentence2 = [1, 5, 6, 2, 4, 7, 6, 2]
+    y = torch.tensor([y_sentence1, y_sentence2]).to(device)
 
-
-x = torch.randint(0, 100, (64, 100))
-mask = torch.ones(64, 100).bool().unsqueeze(1).unsqueeze(2)
-
-encoder_out = encoder(x, mask)
-print(encoder_out.shape)
-
-decoder = Decoder(100, 512, 8, 6, 4, 0.1, 100, 'cpu')
-decoder_out = decoder(encoder_out, mask, mask)
-print(decoder_out.shape)
+    # Padding tokens are 0
+    x_pad_tok = 0
+    y_pad_tok = 0
+    
+    x_vocab_size = 10
+    y_vocab_size = 10
+    
+    # Input shape: (bs, seq_len)
+    print(x.shape, y.shape)
+    
+    model = Transformer(x_vocab_size, y_vocab_size, x_pad_tok, y_pad_tok).to(device)
+    out = model(x, y[:, :-1])
+    
+    # Output shape: (bs, seq_len, y_vocab_size)
+    # a probability distribution over the vocabulary for each token in the sequence
+    print(out.shape)
